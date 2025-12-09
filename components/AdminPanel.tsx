@@ -1,0 +1,276 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Upload, Image as ImageIcon, CheckCircle, AlertCircle, Trash2, Save, X, RefreshCw } from 'lucide-react';
+import { parseCSV, linkPhotosToCsv } from '../utils';
+import { PhotoData, ProcessingStats, CsvData } from '../types';
+
+interface AdminPanelProps {
+  onPublish: (photos: PhotoData[]) => void;
+  onCancel: () => void;
+}
+
+const AdminPanel: React.FC<AdminPanelProps> = ({ onPublish, onCancel }) => {
+  const [photoFiles, setPhotoFiles] = useState<File[]>([]);
+  const [csvData, setCsvData] = useState<CsvData[]>([]);
+  const [csvStatus, setCsvStatus] = useState<'loading' | 'success' | 'error'>('loading');
+  const [processedPhotos, setProcessedPhotos] = useState<PhotoData[]>([]);
+  const [stats, setStats] = useState<ProcessingStats | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [step, setStep] = useState<1 | 2>(1); // 1: Upload, 2: Review
+
+  const photoInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-load CSV on mount
+  useEffect(() => {
+    const loadCatalog = async () => {
+      try {
+        const response = await fetch('/Catalog.csv');
+        if (!response.ok) throw new Error("Catalog.csv not found");
+        const text = await response.text();
+        const parsed = parseCSV(text);
+        setCsvData(parsed);
+        setCsvStatus('success');
+      } catch (e) {
+        console.error("Failed to load Catalog.csv", e);
+        setCsvStatus('error');
+      }
+    };
+    loadCatalog();
+  }, []);
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setPhotoFiles(Array.from(e.target.files));
+    }
+  };
+
+  const processFiles = async () => {
+    if (csvData.length === 0 || photoFiles.length === 0) return;
+
+    setIsProcessing(true);
+    
+    try {
+      console.log("CSV Data loaded lines:", csvData.length);
+      
+      // Now await because conversion happens here
+      const result = await linkPhotosToCsv(photoFiles, csvData);
+      
+      setProcessedPhotos(result.photos);
+      setStats(result.stats);
+      setStep(2);
+    } catch (error) {
+      console.error("Error processing files", error);
+      alert("Не удалось обработать файлы.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const removePhoto = (id: string) => {
+    setProcessedPhotos(prev => prev.filter(p => p.id !== id));
+    setStats(prev => prev ? { ...prev, totalPhotos: prev.totalPhotos - 1 } : null);
+  };
+
+  if (step === 2) {
+    return (
+      <div className="max-w-7xl mx-auto p-6 bg-white rounded-xl shadow-lg border border-slate-200">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-bold text-slate-800">Проверка данных</h2>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setStep(1)}
+              className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg font-medium transition-colors"
+            >
+              Назад
+            </button>
+            <button 
+              onClick={() => onPublish(processedPhotos)}
+              className="flex items-center gap-2 px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md transition-transform active:scale-95"
+            >
+              <Save size={18} />
+              Опубликовать в банк
+            </button>
+          </div>
+        </div>
+
+        {/* Stats Bar */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 flex items-center gap-3">
+             <div className="p-2 bg-blue-100 rounded-full text-blue-600"><ImageIcon size={20} /></div>
+             <div>
+               <p className="text-sm text-slate-500">Всего файлов</p>
+               <p className="text-xl font-bold text-slate-800">{stats?.totalPhotos}</p>
+             </div>
+          </div>
+          <div className="p-4 bg-green-50 rounded-lg border border-green-200 flex items-center gap-3">
+             <div className="p-2 bg-green-100 rounded-full text-green-600"><CheckCircle size={20} /></div>
+             <div>
+               <p className="text-sm text-slate-500">Связано (Есть Код)</p>
+               <p className="text-xl font-bold text-slate-800">{stats?.matched}</p>
+             </div>
+          </div>
+          <div className="p-4 bg-orange-50 rounded-lg border border-orange-200 flex items-center gap-3">
+             <div className="p-2 bg-orange-100 rounded-full text-orange-600"><AlertCircle size={20} /></div>
+             <div>
+               <p className="text-sm text-slate-500">Не найдено в CSV</p>
+               <p className="text-xl font-bold text-slate-800">{stats?.unmatched}</p>
+             </div>
+          </div>
+        </div>
+
+        {/* List */}
+        <div className="bg-slate-50 rounded-lg border border-slate-200 overflow-hidden">
+          <div className="overflow-y-auto max-h-[60vh]">
+            <table className="w-full text-left">
+              <thead className="bg-slate-100 sticky top-0 z-10">
+                <tr>
+                  <th className="p-4 text-sm font-semibold text-slate-600">Превью</th>
+                  <th className="p-4 text-sm font-semibold text-slate-600">Файл / Статус</th>
+                  <th className="p-4 text-sm font-semibold text-slate-600">Код (CSV)</th>
+                  <th className="p-4 text-sm font-semibold text-slate-600">Наименование</th>
+                  <th className="p-4 text-sm font-semibold text-slate-600">Локация / Дата</th>
+                  <th className="p-4 text-sm font-semibold text-slate-600 text-right">Удалить</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {processedPhotos.map((photo) => (
+                  <tr key={photo.id} className={`hover:bg-white transition-colors ${photo.status === 'unmatched' ? 'bg-red-50/50' : ''}`}>
+                    <td className="p-4">
+                        <img src={photo.previewUrl} alt="" className="w-16 h-16 object-cover rounded-md border border-slate-300" />
+                    </td>
+                    <td className="p-4 text-sm text-slate-700">
+                      <div className="font-mono font-medium">{photo.originalName}</div>
+                      {photo.status === 'unmatched' && (
+                        <div className="text-xs text-red-600 mt-1 flex items-center gap-1">
+                          <AlertCircle size={12} />
+                          {photo.matchReason}
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-4">
+                      {photo.matchedId ? (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                          {photo.matchedId}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                          Нет связи
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-4 text-sm text-slate-600 max-w-xs truncate">
+                       {photo.description || <span className="italic text-slate-400">-</span>}
+                    </td>
+                    <td className="p-4 text-sm text-slate-600">
+                       <div className="flex flex-col">
+                         <span>{photo.location || <span className="text-slate-300">-</span>}</span>
+                         <span className="text-xs text-slate-400">{photo.date}</span>
+                       </div>
+                    </td>
+                    <td className="p-4 text-right">
+                       <button onClick={() => removePhoto(photo.id)} className="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-50">
+                         <Trash2 size={18} />
+                       </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto p-8 bg-white rounded-xl shadow-xl border border-slate-200">
+      <div className="flex justify-between items-center mb-8">
+        <div>
+          <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Загрузка данных</h2>
+          <p className="text-slate-500 mt-2">Загрузите фотографии для наполнения фотобанка.</p>
+        </div>
+        <button onClick={onCancel} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
+          <X size={24} />
+        </button>
+      </div>
+
+      {/* CSV Status Section */}
+      <div className="mb-8 p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+         <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-full ${csvStatus === 'success' ? 'bg-green-100 text-green-600' : csvStatus === 'error' ? 'bg-red-100 text-red-600' : 'bg-slate-200 text-slate-500'}`}>
+               {csvStatus === 'loading' && <RefreshCw className="animate-spin" size={20}/>}
+               {csvStatus === 'success' && <CheckCircle size={20}/>}
+               {csvStatus === 'error' && <AlertCircle size={20}/>}
+            </div>
+            <div>
+               <p className="font-semibold text-slate-800">
+                  {csvStatus === 'loading' && 'Загрузка Catalog.csv...'}
+                  {csvStatus === 'success' && 'Реестр Catalog.csv подключен'}
+                  {csvStatus === 'error' && 'Ошибка загрузки Catalog.csv'}
+               </p>
+               <p className="text-xs text-slate-500">
+                  {csvStatus === 'success' ? `Загружено записей: ${csvData.length}` : 'Файл должен находиться в корне сайта'}
+               </p>
+            </div>
+         </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-8">
+        {/* Photos Section */}
+        <div className="space-y-4">
+          <label className="block text-sm font-medium text-slate-700 mb-1">Выберите фотографии (JPG, PNG, TIFF)</label>
+           <div 
+            onClick={() => photoInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer transition-all h-64
+              ${photoFiles.length > 0 ? 'border-indigo-400 bg-indigo-50' : 'border-slate-300 hover:border-indigo-400 hover:bg-slate-50'}
+            `}
+          >
+            <input 
+              type="file" 
+              accept="image/*, .tif, .tiff" 
+              multiple 
+              className="hidden" 
+              ref={photoInputRef}
+              onChange={handlePhotoUpload}
+            />
+            {photoFiles.length > 0 ? (
+              <>
+                <div className="relative">
+                  <ImageIcon className="w-12 h-12 text-indigo-600 mb-3" />
+                  <span className="absolute -top-2 -right-2 bg-indigo-600 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center">
+                    {photoFiles.length}
+                  </span>
+                </div>
+                <p className="font-semibold text-indigo-700">Файлы выбраны</p>
+                <p className="text-xs text-indigo-600 mt-1">Готово к обработке (авто-конвертация TIFF)</p>
+              </>
+            ) : (
+              <>
+                <Upload className="w-12 h-12 text-slate-400 mb-3" />
+                <p className="font-medium text-slate-600">Нажмите для выбора фото</p>
+                <p className="text-xs text-slate-400 text-center mt-2">Имя файла должно начинаться с Кода (напр. p001.jpg)</p>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-8 flex justify-end">
+        <button
+          disabled={csvStatus !== 'success' || photoFiles.length === 0 || isProcessing}
+          onClick={processFiles}
+          className={`
+            px-8 py-3 rounded-lg font-bold text-lg shadow-lg flex items-center gap-3 transition-all
+            ${(csvStatus !== 'success' || photoFiles.length === 0 || isProcessing) 
+              ? 'bg-slate-300 text-slate-500 cursor-not-allowed' 
+              : 'bg-indigo-600 hover:bg-indigo-700 text-white hover:scale-105 active:scale-95'}
+          `}
+        >
+          {isProcessing ? 'Конвертация и связка...' : 'Обработать'}
+          {!isProcessing && <Upload size={20} />}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default AdminPanel;
