@@ -1,0 +1,5 @@
+{
+  "name": "Copy of PhotoMatch Bank",
+  "description": "A smart photo bank that automatically links uploaded photos to descriptions from a CSV file, handling filename variations and duplicates.",
+  "requestFramePermissions": []
+}
