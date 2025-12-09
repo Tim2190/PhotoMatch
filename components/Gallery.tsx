@@ -212,6 +212,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
             onClick={() => handleOpenPhoto(photo)}
           >
             <div className="aspect-[4/3] overflow-hidden bg-slate-100 relative flex items-center justify-center">
+              {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL, ОН ВСЕГДА ЕСТЬ */}
               <img 
                 src={photo.previewUrl} 
                 alt={photo.description} 
@@ -277,21 +278,22 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
                       onClick={() => handleOpenPhoto(photo)}
                    >
                       <div className="w-24 h-24 flex-shrink-0 bg-slate-100 rounded-lg overflow-hidden">
+                        {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL */}
                         <img src={photo.previewUrl} className="w-full h-full object-cover" alt="" />
                       </div>
                       <div className="overflow-hidden">
-                         <div className="text-xs font-semibold text-indigo-600 mb-1 flex items-center gap-1">
-                            <Calendar size={10} />
-                            {photo.date}
-                         </div>
-                         <h4 className="font-bold text-slate-800 text-sm line-clamp-2 mb-1" title={photo.description}>
-                           {photo.description}
-                         </h4>
-                         {photo.location && (
-                           <p className="text-xs text-slate-500 flex items-center gap-1 truncate">
-                              <MapPin size={10} /> {photo.location}
-                           </p>
-                         )}
+                          <div className="text-xs font-semibold text-indigo-600 mb-1 flex items-center gap-1">
+                             <Calendar size={10} />
+                             {photo.date}
+                          </div>
+                          <h4 className="font-bold text-slate-800 text-sm line-clamp-2 mb-1" title={photo.description}>
+                            {photo.description}
+                          </h4>
+                          {photo.location && (
+                            <p className="text-xs text-slate-500 flex items-center gap-1 truncate">
+                               <MapPin size={10} /> {photo.location}
+                            </p>
+                          )}
                       </div>
                    </div>
                 </div>
@@ -307,6 +309,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 opacity-75 hover:opacity-100 transition-opacity">
               {timelineData.withoutDates.map(photo => (
                  <div key={photo.id} onClick={() => handleOpenPhoto(photo)} className="bg-white p-2 rounded-lg border border-slate-200 cursor-pointer">
+                    {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL */}
                     <img src={photo.previewUrl} className="w-full aspect-square object-cover rounded-md mb-2" alt="" />
                     <p className="text-xs text-slate-600 truncate">{photo.description}</p>
                  </div>
@@ -448,12 +451,13 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
           >
             {/* Image Side */}
             <div className="w-full md:w-2/3 bg-slate-900 flex items-center justify-center p-4 relative group">
+               {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL */}
                <img 
                   src={selectedPhoto.previewUrl} 
                   alt={selectedPhoto.description} 
                   className="max-h-[85vh] max-w-full object-contain"
                   onLoad={handleImageLoad}
-                />
+               />
             </div>
 
             {/* Info Side */}
@@ -514,9 +518,14 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
 
               <div className="mt-8 pt-6 border-t border-slate-100">
                 <div className="flex flex-col gap-2">
+                   {/* ✅ ВАЖНЫЙ ФИКС ЗДЕСЬ 
+                      Заменили createObjectURL(file) на previewUrl, так как file может быть null
+                   */}
                    <a 
-                    href={URL.createObjectURL(selectedPhoto.file)} 
+                    href={selectedPhoto.previewUrl} 
                     download={selectedPhoto.originalName}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="flex items-center justify-center gap-2 w-full py-3 bg-slate-900 text-white rounded-lg font-semibold hover:bg-slate-800 transition-colors"
                    >
                      <Download size={18} />
