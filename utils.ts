@@ -149,6 +149,13 @@ const convertTiffToPreview = async (file: File): Promise<string> => {
         const buffer = e.target?.result as ArrayBuffer;
 
         //@ts-ignore
+        if (typeof window.UTIF === 'undefined') {
+          console.warn('UTIF library not loaded');
+          resolve('');
+          return;
+        }
+
+        //@ts-ignore
         const ifds = window.UTIF.decode(buffer);
         if (!ifds || ifds.length === 0) {
           resolve('');
@@ -177,10 +184,12 @@ const convertTiffToPreview = async (file: File): Promise<string> => {
 
         resolve(canvas.toDataURL('image/jpeg', 0.8));
       } catch (err) {
+        console.error('Error converting TIFF:', err);
         resolve('');
       }
     };
 
+    reader.onerror = () => resolve('');
     reader.readAsArrayBuffer(file);
   });
 };
@@ -234,7 +243,7 @@ const COORDINATE_DB: Record<string, [number, number]> = {
   "бухарест": [44.4268, 26.1025],
   "рим": [41.9028, 12.4964],
   "ватикан": [41.9029, 12.4534],
-  "моква": [55.7558, 37.6173], // typo
+  "моква": [55.7558, 37.6173],
   "бишкек": [42.8746, 74.5698],
   "софия": [42.6977, 23.3219],
   "улан-батор": [47.9181, 106.9173],
@@ -292,7 +301,7 @@ const getCoordinates = (location: string): [number, number] | null => {
 };
 
 /* -------------------------------------------------------
- * LINK PHOTOS TO CSV
+ * LINK PHOTOS TO CSV (FIXED & SAFE)
  * ----------------------------------------------------- */
 export const linkPhotosToCsv = async (
   files: File[],
@@ -312,6 +321,12 @@ export const linkPhotosToCsv = async (
   const processedPhotos: PhotoData[] = [];
 
   for (const file of files) {
+    // ВАЖНОЕ ИСПРАВЛЕНИЕ: Проверяем, что это действительно File
+    if (!(file instanceof File)) {
+      console.warn('Пропущен объект, который не является File:', file);
+      continue;
+    }
+
     const normalizedName = normalizeFilename(file.name);
     const lookupKey = normalizedName.toLowerCase();
     const match = csvMap.get(lookupKey);
@@ -328,38 +343,36 @@ export const linkPhotosToCsv = async (
     if (location) tags.push(location);
     if (date) tags.push(date);
 
-    // COORDS
     const coords = getCoordinates(location);
     const lat = coords ? coords[0] : undefined;
     const lng = coords ? coords[1] : undefined;
 
     if (match) matchedCount++;
 
-    // PREVIEW
+    // ГЕНЕРАЦИЯ ПРЕВЬЮ (САМОЕ ВАЖНОЕ)
     const ext = file.name.split('.').pop()?.toLowerCase();
     let previewUrl = '';
 
     try {
-      if ((ext === 'tif' || ext === 'tiff') && file instanceof File) {
+      if (ext === 'tif' || ext === 'tiff') {
+        // Ждем конвертации TIFF
         previewUrl = await convertTiffToPreview(file);
-      } else if (file instanceof File) {
-        previewUrl = URL.createObjectURL(file);
       } else {
-        previewUrl = '';
+        // Для JPG/PNG создаем Blob URL сразу здесь
+        previewUrl = URL.createObjectURL(file);
       }
     } catch (err) {
-      previewUrl = '';
+      console.error(`Ошибка создания превью для ${file.name}:`, err);
+      previewUrl = ''; 
     }
 
     processedPhotos.push({
       id: generateId(),
-      file,
-      previewUrl: previewUrl || '',
+      file: file, // Сохраняем оригинал для загрузки
+      previewUrl: previewUrl, // Используем эту строку для <img src="...">
       originalName: file.name,
       fileSize: file.size,
-
       matchedId: match ? normalizedName : null,
-
       description: description || (match ? 'Без наименования' : ''),
       type,
       location,
@@ -369,7 +382,6 @@ export const linkPhotosToCsv = async (
       lat,
       lng,
       tags,
-
       status: match ? 'matched' : 'unmatched',
       matchReason: match ? 'OK' : `Код "${normalizedName}" не найден в CSV.`,
     });
