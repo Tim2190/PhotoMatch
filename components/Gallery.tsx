@@ -9,12 +9,21 @@ interface GalleryProps {
 
 type ViewMode = 'grid' | 'timeline' | 'map';
 
+// 1. ИЗМЕНЕНИЕ: Тип фильтра теперь хранит координаты
+type LocationFilter = {
+  name: string;
+  lat: number;
+  lng: number;
+} | null;
+
 const Gallery: React.FC<GalleryProps> = ({ photos }) => {
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoData | null>(null);
   const [imgResolution, setImgResolution] = useState<{w: number, h: number} | null>(null);
-  const [activeLocationFilter, setActiveLocationFilter] = useState<string | null>(null);
+  
+  // 2. ИЗМЕНЕНИЕ: Стейт теперь хранит объект, а не строку
+  const [activeLocationFilter, setActiveLocationFilter] = useState<LocationFilter>(null);
 
   // Map state
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -38,9 +47,16 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
       );
     }
 
-    // Apply location drill-down (for Map/Location View)
+    // 3. ИЗМЕНЕНИЕ: Фильтруем строго по координатам!
+    // Это решает проблему "Алматы" vs "Алма-Ата"
     if (activeLocationFilter) {
-      result = result.filter(p => p.location === activeLocationFilter);
+      result = result.filter(p => {
+        if (!p.lat || !p.lng) return false;
+        // Сравниваем числа с маленькой погрешностью (на всякий случай)
+        const isSameLat = Math.abs(p.lat - activeLocationFilter.lat) < 0.0001;
+        const isSameLng = Math.abs(p.lng - activeLocationFilter.lng) < 0.0001;
+        return isSameLat && isSameLng;
+      });
     }
 
     return result;
@@ -50,11 +66,9 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
   const timelineData = useMemo(() => {
     if (viewMode !== 'timeline') return { grouped: [], withoutDates: [] };
 
-    // Filter out photos without dates for the main timeline
     const withDates = filteredPhotos.filter(p => !!p.date);
     const withoutDates = filteredPhotos.filter(p => !p.date);
 
-    // Sort by Date
     withDates.sort((a, b) => {
       const da = parseDateString(a.date);
       const db = parseDateString(b.date);
@@ -64,7 +78,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
       return da.getTime() - db.getTime();
     });
 
-    // Group by Year
     const grouped: { year: number; photos: PhotoData[] }[] = [];
     withDates.forEach(photo => {
       const dateObj = parseDateString(photo.date);
@@ -103,9 +116,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
 
   // --- LEAFLET MAP LOGIC ---
   useEffect(() => {
-    // Only run if map view is active
     if (viewMode !== 'map') {
-      // Cleanup map if switching away
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
@@ -113,7 +124,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
       return;
     }
 
-    // Check if Leaflet is loaded
     // @ts-ignore
     if (typeof window.L === 'undefined') {
       setIsMapLoading(true);
@@ -129,36 +139,31 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
 
     if (!mapContainerRef.current) return;
     
-    // Prevent double init
     if (mapInstanceRef.current) {
       mapInstanceRef.current.remove();
     }
 
-    // Initialize Map
     // @ts-ignore
     const L = window.L;
     
-    // Default view: Eurasia/Center
-    const map = L.map(mapContainerRef.current).setView([48.0196, 66.9237], 3); // Centered roughly on Kazakhstan
+    const map = L.map(mapContainerRef.current).setView([48.0196, 66.9237], 3); 
     mapInstanceRef.current = map;
 
-    // CartoDB Positron (Light, minimalist)
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      attribution: '&copy; OpenStreetMap &copy; CARTO',
       subdomains: 'abcd',
       maxZoom: 19
     }).addTo(map);
 
-    // Fix gray tiles issue by invalidating size after render
     setTimeout(() => {
       map.invalidateSize();
     }, 200);
 
-    // Group photos by location coords
     const markers: Record<string, {lat: number, lng: number, count: number, location: string}> = {};
     
     photos.forEach(p => {
       if (p.lat && p.lng && p.location) {
+        // Ключ - координаты
         const key = `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`;
         if (!markers[key]) {
           markers[key] = { lat: p.lat, lng: p.lng, count: 0, location: p.location };
@@ -167,9 +172,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
       }
     });
 
-    // Add Markers
     Object.values(markers).forEach(m => {
-      // Custom Icon
       const icon = L.divIcon({
         className: 'custom-div-icon',
         html: `<div style="background-color: #4f46e5; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; color: white; font-size: 10px; font-weight: bold;">${m.count}</div>`,
@@ -188,18 +191,23 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
       `);
 
       marker.on('popupopen', () => {
-        const btn = document.getElementById(`btn-${m.lat}-${m.lng}`);
+        const btnId = `btn-${m.lat}-${m.lng}`; 
+        const btn = document.getElementById(btnId);
+        
         if (btn) {
           btn.onclick = () => {
-            setActiveLocationFilter(m.location);
-            // Optional: scroll down or just show filter state
+            // 4. ИЗМЕНЕНИЕ: Передаем весь объект локации (имя + координаты)
+            setActiveLocationFilter({
+                name: m.location,
+                lat: m.lat,
+                lng: m.lng
+            });
           };
         }
       });
     });
 
   }, [viewMode, photos]);
-
 
   // --- RENDERERS ---
 
@@ -212,7 +220,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
             onClick={() => handleOpenPhoto(photo)}
           >
             <div className="aspect-[4/3] overflow-hidden bg-slate-100 relative flex items-center justify-center">
-              {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL, ОН ВСЕГДА ЕСТЬ */}
               <img 
                 src={photo.previewUrl} 
                 alt={photo.description} 
@@ -253,32 +260,25 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
          <p className="text-center text-slate-500 mt-10">Нет данных с датами для отображения хронологии.</p>
       )}
 
-      {/* Grouped Years */}
       {timelineData.grouped.map(({ year, photos }) => (
         <div key={year} className="relative pl-8 md:pl-0">
-           {/* Year Marker */}
            <div className="sticky top-20 z-10 md:absolute md:left-1/2 md:-translate-x-1/2 mb-8 md:mb-0 flex justify-center">
               <div className="bg-indigo-600 text-white px-4 py-1.5 rounded-full font-bold text-lg shadow-lg border-4 border-slate-50">
                 {year}
               </div>
            </div>
            
-           {/* Center Line (Hidden on mobile) */}
            <div className="hidden md:block absolute left-1/2 top-0 bottom-0 w-0.5 bg-indigo-100 -translate-x-1/2 -z-10"></div>
            
            <div className="flex flex-col gap-8 pb-12 pt-4">
              {photos.map((photo, idx) => (
                 <div key={photo.id} className={`flex flex-col md:flex-row items-center gap-6 ${idx % 2 === 0 ? 'md:flex-row-reverse' : ''}`}>
-                   {/* Spacer for alignment */}
                    <div className="hidden md:block flex-1"></div>
-                   
-                   {/* Content Card */}
                    <div 
                       className="flex-1 w-full bg-white p-4 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition-shadow cursor-pointer flex gap-4 items-start"
                       onClick={() => handleOpenPhoto(photo)}
                    >
                       <div className="w-24 h-24 flex-shrink-0 bg-slate-100 rounded-lg overflow-hidden">
-                        {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL */}
                         <img src={photo.previewUrl} className="w-full h-full object-cover" alt="" />
                       </div>
                       <div className="overflow-hidden">
@@ -302,14 +302,12 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
         </div>
       ))}
 
-      {/* Undated Photos */}
       {timelineData.withoutDates.length > 0 && (
         <div className="mt-12 pt-8 border-t border-slate-200">
            <h3 className="text-center text-slate-400 font-medium mb-6 uppercase tracking-wider text-sm">Без точной даты</h3>
            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 opacity-75 hover:opacity-100 transition-opacity">
               {timelineData.withoutDates.map(photo => (
                  <div key={photo.id} onClick={() => handleOpenPhoto(photo)} className="bg-white p-2 rounded-lg border border-slate-200 cursor-pointer">
-                    {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL */}
                     <img src={photo.previewUrl} className="w-full aspect-square object-cover rounded-md mb-2" alt="" />
                     <p className="text-xs text-slate-600 truncate">{photo.description}</p>
                  </div>
@@ -323,8 +321,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
   const renderMapView = () => {
     return (
       <div className="space-y-6 animate-in fade-in duration-500">
-        
-        {/* LEAFLET MAP CONTAINER */}
         <div className="bg-slate-100 rounded-xl shadow-inner border border-slate-200 overflow-hidden relative">
            <div ref={mapContainerRef} className="w-full aspect-[2/1] relative bg-slate-200 z-0"></div>
            
@@ -341,12 +337,13 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
            </div>
         </div>
         
+        {/* 5. ИЗМЕНЕНИЕ: Используем поле .name из объекта фильтра */}
         {activeLocationFilter && (
            <div className="animate-in fade-in slide-in-from-top-4 duration-300">
              <div className="mb-4 flex items-center justify-between">
                 <h3 className="font-bold text-xl text-slate-800 flex items-center gap-2">
                    <MapPin className="text-indigo-600" size={24} />
-                   {activeLocationFilter}
+                   {activeLocationFilter.name}
                 </h3>
                 <button onClick={() => setActiveLocationFilter(null)} className="text-sm text-indigo-600 hover:underline">
                   Показать все локации
@@ -365,8 +362,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
     );
   };
 
-  // --- MAIN RENDER ---
-
   if (photos.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-96 text-slate-400">
@@ -381,10 +376,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
 
   return (
     <div className="container mx-auto px-4 py-6">
-      {/* Controls Header */}
       <div className="flex flex-col md:flex-row gap-4 justify-between items-center mb-8">
-         
-         {/* Search */}
          <div className="relative w-full md:max-w-md">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <Search className="h-5 w-5 text-slate-400" />
@@ -403,7 +395,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
             )}
          </div>
 
-         {/* View Switcher */}
          <div className="flex bg-white p-1 rounded-lg border border-slate-200 shadow-sm w-full md:w-auto">
             <button 
               onClick={() => { setViewMode('grid'); setActiveLocationFilter(null); }}
@@ -429,7 +420,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
          </div>
       </div>
 
-      {/* Content */}
       <div className="min-h-[50vh]">
         {viewMode === 'grid' && renderGridView()}
         {viewMode === 'timeline' && renderTimelineView()}
@@ -442,16 +432,13 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
         )}
       </div>
 
-      {/* Modal */}
       {selectedPhoto && (
         <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={() => setSelectedPhoto(null)}>
           <div 
             className="bg-white rounded-2xl overflow-hidden max-w-5xl w-full max-h-[90vh] flex flex-col md:flex-row shadow-2xl animate-in fade-in zoom-in duration-200"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Image Side */}
             <div className="w-full md:w-2/3 bg-slate-900 flex items-center justify-center p-4 relative group">
-               {/* ✅ ИСПОЛЬЗУЕМ PREVIEWURL */}
                <img 
                   src={selectedPhoto.previewUrl} 
                   alt={selectedPhoto.description} 
@@ -460,7 +447,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
                />
             </div>
 
-            {/* Info Side */}
             <div className="w-full md:w-1/3 p-6 md:p-8 flex flex-col bg-white overflow-y-auto">
               <div className="flex justify-between items-start mb-6">
                 <div>
@@ -477,10 +463,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
               </div>
 
               <div className="flex-grow space-y-6">
-                
-                {/* Metadata Grid */}
                 <div className="grid grid-cols-1 gap-4">
-                  
                   {selectedPhoto.location && (
                      <div className="flex items-start gap-3">
                         <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
@@ -504,7 +487,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
                         </div>
                      </div>
                   )}
-                  
                 </div>
 
                 {selectedPhoto.note && (
@@ -513,14 +495,10 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
                       <p className="text-sm text-yellow-800 italic">"{selectedPhoto.note}"</p>
                    </div>
                 )}
-
               </div>
 
               <div className="mt-8 pt-6 border-t border-slate-100">
                 <div className="flex flex-col gap-2">
-                   {/* ✅ ВАЖНЫЙ ФИКС ЗДЕСЬ 
-                      Заменили createObjectURL(file) на previewUrl, так как file может быть null
-                   */}
                    <a 
                     href={selectedPhoto.previewUrl} 
                     download={selectedPhoto.originalName}
