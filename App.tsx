@@ -4,6 +4,7 @@ import Gallery from './components/Gallery';
 import AdminPanel from './components/AdminPanel';
 import { PhotoData } from './types';
 import { createClient } from '@supabase/supabase-js';
+import { dataURLtoFile } from './utils'; // Импортируем нашу новую функцию-помощник
 
 const supabase = createClient(
   'https://nugixzapgicswhtuaeki.supabase.co',
@@ -43,7 +44,8 @@ function App() {
       const loadedPhotos: PhotoData[] = [];
       
       for (const file of files) {
-        if (file.name === '.emptyFolderPlaceholder' || file.name.endsWith('.json')) continue;
+        // Пропускаем системные файлы, JSON-метаданные и сгенерированные JPG-превьюшки
+        if (file.name === '.emptyFolderPlaceholder' || file.name.endsWith('.json') || file.name.includes('_preview.jpg')) continue;
 
         const { data: urlData } = supabase
           .storage
@@ -65,7 +67,8 @@ function App() {
         loadedPhotos.push({
           id: metadata.id || file.name,
           file: null as any,
-          previewUrl: urlData.publicUrl,
+          // САМОЕ ВАЖНОЕ: Если есть ссылка на легкое превью, берем её. Иначе - оригинал.
+          previewUrl: metadata.previewUrl || urlData.publicUrl,
           originalName: metadata.originalName || file.name,
           matchedId: metadata.matchedId || null,
           fileSize: metadata.fileSize || 0,
@@ -96,23 +99,76 @@ function App() {
       setLoading(true);
 
       for (const photo of newPhotos) {
-        const fileName = `${photo.id}_${photo.originalName}`;
+        // 1. Подготовка файлов
+        let fileToUpload = photo.file;
+        let previewFile: File | null = null;
+        
+        const originalExt = photo.originalName.split('.').pop()?.toLowerCase();
+        const isTiff = originalExt === 'tif' || originalExt === 'tiff';
+
+        // Если это TIFF и у нас есть base64 превью (которое сгенерировал utils.ts)
+        // Превращаем его в настоящий файл JPG для загрузки
+        if (isTiff && photo.previewUrl && photo.previewUrl.startsWith('data:')) {
+            const previewName = `preview_${photo.originalName.replace(/\.[^/.]+$/, "")}.jpg`;
+            previewFile = dataURLtoFile(photo.previewUrl, previewName);
+        }
+
+        // 2. Имя для сохранения в Storage
+        const storageFileName = `${photo.id}_${photo.originalName}`;
+        const previewStorageName = previewFile ? `${photo.id}_preview.jpg` : null;
+
+        // 3. Загрузка ОРИГИНАЛА (TIFF или любой другой)
         const { error: uploadError } = await supabase
           .storage
           .from('photos')
-          .upload(fileName, photo.file, {
+          .upload(storageFileName, fileToUpload, {
             cacheControl: '3600',
             upsert: true
           });
 
         if (uploadError) {
-          console.error('Ошибка загрузки фото:', uploadError);
+          console.error('Ошибка загрузки оригинала:', uploadError);
           continue;
         }
+
+        // 4. Загрузка ПРЕВЬЮ (если мы его создали)
+        let publicPreviewUrl = null;
+        if (previewFile && previewStorageName) {
+            const { error: previewError } = await supabase
+                .storage
+                .from('photos')
+                .upload(previewStorageName, previewFile, {
+                    cacheControl: '3600',
+                    upsert: true
+                });
+            
+            if (!previewError) {
+                // Получаем публичную ссылку на только что загруженный JPG
+                const { data: urlData } = supabase
+                    .storage
+                    .from('photos')
+                    .getPublicUrl(previewStorageName);
+                publicPreviewUrl = urlData.publicUrl;
+            } else {
+                console.error('Ошибка загрузки превью:', previewError);
+            }
+        }
+
+        // 5. Формируем и сохраняем метаданные
+        // Получаем ссылку на оригинал (для скачивания)
+        const { data: originalUrlData } = supabase.storage.from('photos').getPublicUrl(storageFileName);
 
         const metadata = {
           id: photo.id,
           originalName: photo.originalName,
+          
+          // ВАЖНО: В поле previewUrl пишем ссылку на JPG (если есть), иначе на оригинал.
+          // Это позволит галерее грузиться быстро и показывать TIFF.
+          previewUrl: publicPreviewUrl || originalUrlData.publicUrl,
+          
+          // Для скачивания всегда сохраняем ссылку на оригинал
+          downloadUrl: originalUrlData.publicUrl,
+          
           matchedId: photo.matchedId,
           fileSize: photo.fileSize,
           description: photo.description,
