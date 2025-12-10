@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, X, Maximize2, Download, MapPin, Calendar, LayoutGrid, List, Map as MapIcon, Loader2 } from 'lucide-react';
+import { Search, X, Maximize2, Download, MapPin, Calendar, LayoutGrid, List, Map as MapIcon, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { PhotoData } from '../types';
 import { formatBytes, parseDateString } from '../utils';
 
@@ -9,50 +9,71 @@ interface GalleryProps {
 
 type ViewMode = 'grid' | 'timeline' | 'map';
 
-// 1. ИЗМЕНЕНИЕ: Тип фильтра теперь хранит координаты
 type LocationFilter = {
   name: string;
   lat: number;
   lng: number;
 } | null;
 
+const MONTH_NAMES = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+];
+
+/* -------------------------------------------------------
+ * HELPER: SMART RUSSIAN STEMMER
+ * Отрезает окончания, чтобы искать по корню слова
+ * ----------------------------------------------------- */
+const getRussianRoot = (word: string) => {
+  const w = word.toLowerCase();
+  if (w.length < 4) return w; // Короткие слова не трогаем
+  // Убираем окончания (гласные, й, ь, ъ) с конца слова
+  // Это превращает "Астаны" -> "астан", "Президента" -> "президент"
+  return w.replace(/[аяоеиыуэюьъй]+$/, "");
+};
+
 const Gallery: React.FC<GalleryProps> = ({ photos }) => {
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoData | null>(null);
   const [imgResolution, setImgResolution] = useState<{w: number, h: number} | null>(null);
-  
-  // 2. ИЗМЕНЕНИЕ: Стейт теперь хранит объект, а не строку
   const [activeLocationFilter, setActiveLocationFilter] = useState<LocationFilter>(null);
 
-  // Map state
+  const [expandedYears, setExpandedYears] = useState<number[]>([]);
+  const [expandedMonths, setExpandedMonths] = useState<string[]>([]);
+
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const [isMapLoading, setIsMapLoading] = useState(false);
 
-  // --- Filtering Logic ---
+  // --- FILTERING LOGIC (SMART SEARCH) ---
   const filteredPhotos = useMemo(() => {
     let result = photos;
     
-    // Apply text search
+    // 1. Умный поиск по тексту
     if (search) {
-      const lowerSearch = search.toLowerCase();
-      result = result.filter(p => 
-        (p.matchedId && p.matchedId.toLowerCase().includes(lowerSearch)) ||
-        p.description.toLowerCase().includes(lowerSearch) ||
-        p.location.toLowerCase().includes(lowerSearch) ||
-        p.type.toLowerCase().includes(lowerSearch) ||
-        p.date.toLowerCase().includes(lowerSearch) ||
-        p.tags.some(t => t.toLowerCase().includes(lowerSearch))
-      );
+      // Разбиваем запрос на слова и получаем их "корни"
+      const searchTerms = search.split(/\s+/).filter(t => t.length > 0).map(getRussianRoot);
+      
+      result = result.filter(p => {
+        const fullText = [
+          p.matchedId,
+          p.description,
+          p.location,
+          p.type,
+          p.date,
+          ...(p.tags || [])
+        ].join(' ').toLowerCase();
+
+        // Проверяем, содержится ли КОРЕНЬ каждого слова запроса в тексте
+        return searchTerms.every(root => fullText.includes(root));
+      });
     }
 
-    // 3. ИЗМЕНЕНИЕ: Фильтруем строго по координатам!
-    // Это решает проблему "Алматы" vs "Алма-Ата"
+    // 2. Фильтр по карте (координаты)
     if (activeLocationFilter) {
       result = result.filter(p => {
         if (!p.lat || !p.lng) return false;
-        // Сравниваем числа с маленькой погрешностью (на всякий случай)
         const isSameLat = Math.abs(p.lat - activeLocationFilter.lat) < 0.0001;
         const isSameLng = Math.abs(p.lng - activeLocationFilter.lng) < 0.0001;
         return isSameLat && isSameLng;
@@ -62,38 +83,47 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
     return result;
   }, [photos, search, activeLocationFilter]);
 
-  // --- Grouping Logic for Timeline ---
+  // --- TIMELINE LOGIC ---
   const timelineData = useMemo(() => {
-    if (viewMode !== 'timeline') return { grouped: [], withoutDates: [] };
+    if (viewMode !== 'timeline') return { grouped: {}, years: [], withoutDates: [] };
 
     const withDates = filteredPhotos.filter(p => !!p.date);
     const withoutDates = filteredPhotos.filter(p => !p.date);
 
-    withDates.sort((a, b) => {
-      const da = parseDateString(a.date);
-      const db = parseDateString(b.date);
-      if (!da && !db) return 0;
-      if (!da) return 1;
-      if (!db) return -1;
-      return da.getTime() - db.getTime();
-    });
+    const grouped: Record<number, Record<number, Record<number, PhotoData[]>>> = {};
 
-    const grouped: { year: number; photos: PhotoData[] }[] = [];
     withDates.forEach(photo => {
       const dateObj = parseDateString(photo.date);
       if (dateObj) {
         const year = dateObj.getFullYear();
-        let group = grouped.find(g => g.year === year);
-        if (!group) {
-          group = { year, photos: [] };
-          grouped.push(group);
-        }
-        group.photos.push(photo);
+        const month = dateObj.getMonth();
+        const day = dateObj.getDate();
+
+        if (!grouped[year]) grouped[year] = {};
+        if (!grouped[year][month]) grouped[year][month] = {};
+        if (!grouped[year][month][day]) grouped[year][month][day] = [];
+
+        grouped[year][month][day].push(photo);
       }
     });
 
-    return { grouped, withoutDates };
+    const years = Object.keys(grouped).map(Number).sort((a, b) => b - a);
+
+    return { grouped, years, withoutDates };
   }, [filteredPhotos, viewMode]);
+
+  const toggleYear = (year: number) => {
+    setExpandedYears(prev => 
+      prev.includes(year) ? prev.filter(y => y !== year) : [...prev, year]
+    );
+  };
+
+  const toggleMonth = (year: number, month: number) => {
+    const key = `${year}-${month}`;
+    setExpandedMonths(prev => 
+      prev.includes(key) ? prev.filter(m => m !== key) : [...prev, key]
+    );
+  };
 
   const handleOpenPhoto = (photo: PhotoData) => {
     setImgResolution(null);
@@ -114,7 +144,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
     setSearch('');
   };
 
-  // --- LEAFLET MAP LOGIC ---
+  // --- LEAFLET MAP ---
   useEffect(() => {
     if (viewMode !== 'map') {
       if (mapInstanceRef.current) {
@@ -163,7 +193,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
     
     photos.forEach(p => {
       if (p.lat && p.lng && p.location) {
-        // Ключ - координаты
         const key = `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`;
         if (!markers[key]) {
           markers[key] = { lat: p.lat, lng: p.lng, count: 0, location: p.location };
@@ -193,10 +222,8 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
       marker.on('popupopen', () => {
         const btnId = `btn-${m.lat}-${m.lng}`; 
         const btn = document.getElementById(btnId);
-        
         if (btn) {
           btn.onclick = () => {
-            // 4. ИЗМЕНЕНИЕ: Передаем весь объект локации (имя + координаты)
             setActiveLocationFilter({
                 name: m.location,
                 lat: m.lat,
@@ -211,9 +238,9 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
 
   // --- RENDERERS ---
 
-  const renderGridView = () => (
+  const renderGridView = (items: PhotoData[] = filteredPhotos) => (
     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 animate-in fade-in duration-500">
-        {filteredPhotos.map((photo) => (
+        {items.map((photo) => (
           <div 
             key={photo.id} 
             className="group bg-white rounded-xl shadow-sm hover:shadow-xl border border-slate-100 overflow-hidden transition-all duration-300 hover:-translate-y-1 cursor-pointer"
@@ -255,64 +282,91 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
   );
 
   const renderTimelineView = () => (
-    <div className="max-w-5xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
-      {timelineData.grouped.length === 0 && timelineData.withoutDates.length === 0 && (
+    <div className="max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {timelineData.years.length === 0 && timelineData.withoutDates.length === 0 && (
          <p className="text-center text-slate-500 mt-10">Нет данных с датами для отображения хронологии.</p>
       )}
 
-      {timelineData.grouped.map(({ year, photos }) => (
-        <div key={year} className="relative pl-8 md:pl-0">
-           <div className="sticky top-20 z-10 md:absolute md:left-1/2 md:-translate-x-1/2 mb-8 md:mb-0 flex justify-center">
-              <div className="bg-indigo-600 text-white px-4 py-1.5 rounded-full font-bold text-lg shadow-lg border-4 border-slate-50">
-                {year}
-              </div>
-           </div>
-           
-           <div className="hidden md:block absolute left-1/2 top-0 bottom-0 w-0.5 bg-indigo-100 -translate-x-1/2 -z-10"></div>
-           
-           <div className="flex flex-col gap-8 pb-12 pt-4">
-             {photos.map((photo, idx) => (
-                <div key={photo.id} className={`flex flex-col md:flex-row items-center gap-6 ${idx % 2 === 0 ? 'md:flex-row-reverse' : ''}`}>
-                   <div className="hidden md:block flex-1"></div>
-                   <div 
-                      className="flex-1 w-full bg-white p-4 rounded-xl shadow-sm border border-slate-200 hover:shadow-md transition-shadow cursor-pointer flex gap-4 items-start"
-                      onClick={() => handleOpenPhoto(photo)}
-                   >
-                      <div className="w-24 h-24 flex-shrink-0 bg-slate-100 rounded-lg overflow-hidden">
-                        <img src={photo.previewUrl} className="w-full h-full object-cover" alt="" />
-                      </div>
-                      <div className="overflow-hidden">
-                          <div className="text-xs font-semibold text-indigo-600 mb-1 flex items-center gap-1">
-                             <Calendar size={10} />
-                             {photo.date}
-                          </div>
-                          <h4 className="font-bold text-slate-800 text-sm line-clamp-2 mb-1" title={photo.description}>
-                            {photo.description}
-                          </h4>
-                          {photo.location && (
-                            <p className="text-xs text-slate-500 flex items-center gap-1 truncate">
-                               <MapPin size={10} /> {photo.location}
-                            </p>
-                          )}
-                      </div>
+      <div className="space-y-4">
+        {timelineData.years.map((year) => {
+          const isYearExpanded = expandedYears.includes(year);
+          const monthsInYear = timelineData.grouped[year];
+          const sortedMonths = Object.keys(monthsInYear).map(Number).sort((a, b) => a - b);
+
+          return (
+            <div key={year} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+              <div 
+                className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50 transition-colors"
+                onClick={() => toggleYear(year)}
+              >
+                <div className="flex items-center gap-4">
+                   <div className="bg-indigo-600 text-white px-3 py-1 rounded-lg font-bold text-lg shadow-sm">
+                      {year}
                    </div>
+                   <span className="text-slate-500 text-sm">
+                      {Object.values(monthsInYear).reduce((acc, m) => acc + Object.values(m).reduce((a, d) => a + d.length, 0), 0)} фото
+                   </span>
                 </div>
-             ))}
-           </div>
-        </div>
-      ))}
+                {isYearExpanded ? <ChevronDown className="text-slate-400" /> : <ChevronRight className="text-slate-400" />}
+              </div>
+
+              {isYearExpanded && (
+                <div className="border-t border-slate-100 bg-slate-50/50 p-2 space-y-2">
+                  {sortedMonths.map(month => {
+                    const isMonthExpanded = expandedMonths.includes(`${year}-${month}`);
+                    const daysInMonth = monthsInYear[month];
+                    const sortedDays = Object.keys(daysInMonth).map(Number).sort((a, b) => a - b);
+
+                    return (
+                      <div key={month} className="ml-4 border-l-2 border-indigo-200 pl-4">
+                         <div 
+                            className="flex items-center gap-2 py-2 cursor-pointer hover:text-indigo-600 transition-colors"
+                            onClick={() => toggleMonth(year, month)}
+                         >
+                            {isMonthExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                            <h3 className="font-semibold text-slate-700">{MONTH_NAMES[month]}</h3>
+                            <span className="text-xs text-slate-400 bg-white px-2 py-0.5 rounded-full border border-slate-200">
+                              {Object.values(daysInMonth).reduce((acc, d) => acc + d.length, 0)}
+                            </span>
+                         </div>
+
+                         {isMonthExpanded && (
+                           <div className="mt-2 space-y-6 pl-2">
+                              {sortedDays.map(day => (
+                                <div key={day}>
+                                   <div className="flex items-center gap-2 mb-3">
+                                      <div className="w-2 h-2 bg-indigo-400 rounded-full"></div>
+                                      <span className="font-medium text-sm text-slate-600">{day} {MONTH_NAMES[month]} {year}</span>
+                                   </div>
+                                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                                      {daysInMonth[day].map(photo => (
+                                         <div 
+                                            key={photo.id} 
+                                            onClick={() => handleOpenPhoto(photo)}
+                                            className="aspect-square bg-slate-200 rounded-lg overflow-hidden cursor-pointer hover:opacity-90 transition-opacity border border-slate-200"
+                                          >
+                                            <img src={photo.previewUrl} className="w-full h-full object-cover" alt="" />
+                                         </div>
+                                      ))}
+                                   </div>
+                                </div>
+                              ))}
+                           </div>
+                         )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
 
       {timelineData.withoutDates.length > 0 && (
         <div className="mt-12 pt-8 border-t border-slate-200">
            <h3 className="text-center text-slate-400 font-medium mb-6 uppercase tracking-wider text-sm">Без точной даты</h3>
-           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 opacity-75 hover:opacity-100 transition-opacity">
-              {timelineData.withoutDates.map(photo => (
-                 <div key={photo.id} onClick={() => handleOpenPhoto(photo)} className="bg-white p-2 rounded-lg border border-slate-200 cursor-pointer">
-                    <img src={photo.previewUrl} className="w-full aspect-square object-cover rounded-md mb-2" alt="" />
-                    <p className="text-xs text-slate-600 truncate">{photo.description}</p>
-                 </div>
-              ))}
-           </div>
+           {renderGridView(timelineData.withoutDates)}
         </div>
       )}
     </div>
@@ -337,7 +391,6 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
            </div>
         </div>
         
-        {/* 5. ИЗМЕНЕНИЕ: Используем поле .name из объекта фильтра */}
         {activeLocationFilter && (
            <div className="animate-in fade-in slide-in-from-top-4 duration-300">
              <div className="mb-4 flex items-center justify-between">
@@ -384,7 +437,7 @@ const Gallery: React.FC<GalleryProps> = ({ photos }) => {
             <input
               type="text"
               className="block w-full pl-10 pr-3 py-2.5 border border-slate-300 rounded-xl leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow shadow-sm"
-              placeholder="Поиск по всему..."
+              placeholder="Поиск (например: Алматы зима)"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
